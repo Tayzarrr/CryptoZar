@@ -128,7 +128,7 @@ Aplikasi menyediakan demo otomatis yang memperlihatkan proses:
 
 ## 👨‍💻 Developer
 
-**Andika Novanda Putra**\
+**Andika Novanda Putra**
 
 ## 📌 Catatan
 
