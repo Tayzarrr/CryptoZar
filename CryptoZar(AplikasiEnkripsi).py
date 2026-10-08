@@ -2,9 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 CryptoZar - Aplikasi Enkripsi
-Nama : Andika Novanda Putra
-NIM  : 245314084
-Kelas: Kriptografi C
+
 """
 
 # ######################################################################
