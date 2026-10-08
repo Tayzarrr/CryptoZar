@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 CryptoZar - Aplikasi Enkripsi
-
+Nama : Andika Novanda Putra
+NIM  : 245314084
+Kelas: Kriptografi C
 """
 
 # ######################################################################
@@ -890,6 +892,933 @@ class _PenulisAntrean:
 # ======================================================================
 # KOMPONEN UI
 # ======================================================================
+# ======================================================================
+# ANALISIS TANPA KUNCI (KRIPTANALISIS)
+# Dipakai tab "Analyze": menebak kunci dan plaintext hanya dari ciphertext.
+# Semua langkah ditulis ke laporan agar proses pencarian kunci terlihat.
+# ======================================================================
+import heapq
+import itertools
+
+SAMPEL = 4000          # maksimum huruf yang dipakai untuk menilai kandidat (agar cepat)
+SAMPEL_KAMUS = 400     # huruf yang dipakai pada serangan kamus
+MAKS_KAMUS = 50_000    # maksimum kata dari wordlist unggahan
+
+# Frekuensi huruf (persen). Indonesia = perkiraan dari teks umum berbahasa Indonesia.
+FREK_BAHASA = {
+    "Indonesia": dict(A=19.2, N=10.0, I=8.6, E=7.9, K=6.0, T=5.6, R=5.4, U=5.3, D=4.4, M=4.1,
+                      S=4.2, L=3.3, G=3.4, B=3.1, H=2.5, P=2.6, O=2.4, Y=1.6, C=1.3, J=1.0,
+                      W=0.9, F=0.2, Z=0.1, V=0.1, X=0.03, Q=0.03),
+    "English": dict(E=12.70, T=9.06, A=8.17, O=7.51, I=6.97, N=6.75, S=6.33, H=6.09, R=5.99,
+                    D=4.25, L=4.03, C=2.78, U=2.76, M=2.41, W=2.36, F=2.23, G=2.02, Y=1.97,
+                    P=1.93, B=1.49, V=0.98, K=0.77, J=0.15, X=0.15, Q=0.10, Z=0.07),
+}
+
+
+def _prob(d):
+    total = sum(d.values())
+    return [max(d.get(ch, 0.0) / total, 0.0005) for ch in ALFABET]
+
+
+PROB = {b: _prob(d) for b, d in FREK_BAHASA.items()}
+LOGP = {b: [math.log(p) for p in v] for b, v in PROB.items()}
+IC_BAHASA = {b: sum(p * p for p in v) for b, v in PROB.items()}
+
+_KATA_TEKS = """
+yang dan dengan untuk dari pada adalah ini itu akan atau dalam tidak juga saya kami kita mereka
+anda ada bisa sudah belum karena sebagai oleh telah para harus lebih saat sangat antara setelah
+tersebut dapat lagi hanya semua setiap banyak belajar kriptografi enkripsi dekripsi kunci pesan
+rahasia sandi data informasi komputer keamanan teks file algoritma program aplikasi selamat pagi
+siang malam terima kasih hari besok kemarin tugas kuliah kelas dosen mahasiswa universitas serang
+laporan kerja sama bersama tentang bahwa jika maka namun tetapi sehingga ketika sebuah suatu orang
+dunia negara masalah sistem proses hasil waktu tahun bulan minggu teman rumah sekolah buku baca
+tulis lihat dengar makan minum tidur bertemu kembali jangan sampai segera cepat hati pergi datang
+the and that have for not with you this but his from they say her she will one all would there
+their what out about who get which when make can like time just him know take people into year
+your good some could them see other than then now look only come its over think also back after
+use two how our work first well way even new want because any these give day most are was were
+secret message attack dawn hello world crypto key cipher plain text encrypt decrypt security
+information computer meet tomorrow night morning please thank
+"""
+KATA_UMUM = sorted({w.upper() for w in _KATA_TEKS.split() if len(w) >= 3},
+                   key=lambda w: (-len(w), w))
+_KATA_AWAL = {}
+for _w in KATA_UMUM:
+    _KATA_AWAL.setdefault(_w[0], []).append(_w)
+
+KATA_KUNCI_BAWAAN = """
+SANDI MONARCHY KEYWORD SECRET PLAYFAIR CRYPTO CRYPTOZAR CRYPTOGRAPHY KRIPTOGRAFI KRIPTO RAHASIA
+KUNCI PASSWORD PASSWD ADMIN LOGIN INFORMATIKA KOMPUTER UNIVERSITAS KAMPUS INDONESIA JAKARTA
+YOGYAKARTA MERDEKA GARUDA PANCASILA NUSANTARA CIPHER VIGENERE CAESAR HILL SECURITY SECURE LEMON
+ORANGE APPLE BANANA TIGER DRAGON NAGA MATAHARI BULAN BINTANG LANGIT BUMI GUNUNG LAUT SAMUDRA
+HARIMAU KUCING ANJING BURUNG PELANGI ENIGMA ALPHA BETA GAMMA DELTA OMEGA SIGMA MATRIX SYSTEM
+NETWORK INTERNET SERVER CLIENT DATABASE SOFTWARE HARDWARE PROGRAM PYTHON JAVA LINUX WINDOWS
+ANDROID GOOGLE FACEBOOK TWITTER MERAH BIRU HIJAU KUNING HITAM PUTIH COKLAT ORANYE UNGU RAJA RATU
+KERAJAAN PERANG DAMAI CINTA SAYANG KASIH SEMANGAT BELAJAR KULIAH TUGAS UJIAN NILAI DOSEN KELAS
+MAHASISWA SEKOLAH SECRETKEY MASTER HELLO WORLD TEST TESTING ABC ABCD QWERTY ZEBRA STONE FOREST
+OCEAN RIVER MOUNTAIN SUNSHINE MOONLIGHT STARLIGHT FREEDOM LIBERTY JUSTICE TRUTH POWER ENERGY
+""".split()
+
+
+# ----------------------------------------------------------------------
+# Alat ukur bahasa
+# ----------------------------------------------------------------------
+def _hitung(s):
+    c = [0] * 26
+    for ch in s:
+        c[ord(ch) - 65] += 1
+    return c
+
+
+def indeks_koinsidensi(s):
+    n = len(s)
+    if n < 2:
+        return 0.0
+    return sum(f * (f - 1) for f in _hitung(s)) / (n * (n - 1))
+
+
+def cakupan_kata(teks):
+    """Proporsi huruf yang tertutup kata umum (pencocokan terpanjang, tanpa tumpang tindih)."""
+    n = len(teks)
+    if n == 0:
+        return 0.0
+    i = tertutup = 0
+    while i < n:
+        for w in _KATA_AWAL.get(teks[i], ()):
+            if teks.startswith(w, i):
+                tertutup += len(w)
+                i += len(w)
+                break
+        else:
+            i += 1
+    return tertutup / n
+
+
+def skor_teks(teks, bahasa="Auto"):
+    """Nilai kemiripan sebuah teks dengan bahasa alami. skor lebih besar = lebih mirip."""
+    t = teks[:SAMPEL]
+    n = len(t)
+    if n == 0:
+        return {"skor": -9.0, "chi2": 9.0, "kata": 0.0, "bahasa": "-"}
+    cnt = _hitung(t)
+    terbaik = None
+    for b in ([bahasa] if bahasa in PROB else list(PROB)):
+        chi = sum((cnt[i] - n * PROB[b][i]) ** 2 / (n * PROB[b][i]) for i in range(26)) / n
+        if terbaik is None or chi < terbaik[0]:
+            terbaik = (chi, b)
+    kata = cakupan_kata(t)
+    return {"skor": kata - 0.15 * terbaik[0], "chi2": terbaik[0], "kata": kata,
+            "bahasa": terbaik[1]}
+
+
+def keyakinan(s, n):
+    if n < 12:
+        return "Rendah (ciphertext terlalu pendek)"
+    if s["kata"] >= 0.35 and s["chi2"] <= 0.9:
+        return "Tinggi"
+    if s["kata"] >= 0.18 or s["chi2"] <= 0.4:
+        return "Sedang"
+    return "Rendah (hasil belum tentu terbaca)"
+
+
+def keyakinan_kata(s, n):
+    """Untuk hasil yang sudah dioptimalkan terhadap frekuensi huruf (chi2 pasti kecil): hanya kata yang dipercaya."""
+    if n < 12:
+        return "Rendah (ciphertext terlalu pendek)"
+    if s["kata"] >= 0.35:
+        return "Tinggi"
+    if s["kata"] >= 0.18:
+        return "Sedang"
+    return "Rendah (hasil belum tentu terbaca)"
+
+
+def _logp_teks(t, daftar_bahasa):
+    return max(sum(LOGP[b][ord(c) - 65] for c in t) for b in daftar_bahasa)
+
+
+def _daftar_bahasa(bahasa):
+    return [bahasa] if bahasa in PROB else list(PROB)
+
+
+def _pot(teks, n=44):
+    return teks if len(teks) <= n else teks[:n] + "..."
+
+
+def _bar(nilai, skala, lebar=24):
+    return "#" * max(0, min(lebar, round(nilai / skala * lebar)))
+
+
+def _ciri_ciphertext(teks):
+    """Sidik jari ciphertext huruf: panjang, IC, pola digraf."""
+    n = len(teks)
+    ic = indeks_koinsidensi(teks)
+    baris = [f"Panjang ciphertext      : {n} huruf (A-Z)",
+             f"Huruf berbeda           : {len(set(teks))} dari 26",
+             f"Index of Coincidence    : {ic:.4f}   (bahasa alami ~{IC_BAHASA['English']:.3f}-"
+             f"{IC_BAHASA['Indonesia']:.3f}; acak ~0.0385)"]
+    if ic >= 0.060:
+        baris.append("  -> IC mirip bahasa alami: kemungkinan substitusi satu alfabet (mis. Caesar).")
+    elif ic >= 0.045:
+        baris.append("  -> IC di antara bahasa alami dan acak: kemungkinan polialfabetik / digraf.")
+    else:
+        baris.append("  -> IC mendekati acak: polialfabetik (kunci panjang), Hill, atau teks terlalu pendek.")
+    if n % 2 == 0:
+        ganda = sum(1 for i in range(0, n - 1, 2) if teks[i] == teks[i + 1])
+        baris.append(f"Genap / pasangan kembar : panjang genap; pasangan huruf kembar (AA, BB, ...) = {ganda}"
+                     + ("  <- ciri khas Playfair (tidak pernah ada)" if ganda == 0 and n >= 20 else ""))
+    else:
+        baris.append("Panjang ganjil          : bukan Playfair (digraf harus genap)")
+    if "J" in teks:
+        baris.append("Huruf J ada             : bukan Playfair (tabel 5x5 menggabungkan I/J)")
+    baris.append(f"Habis dibagi 2 / 3      : {'ya' if n % 2 == 0 else 'tidak'} / "
+                 f"{'ya' if n % 3 == 0 else 'tidak'}  (syarat Hill 2x2 / 3x3)")
+    return baris
+
+
+def _hasil(kode, kunci, laporan, skor, dicoba, ringkas, n_huruf=0, yakin=None):
+    return {"kode": kode, "kunci": kunci, "laporan": laporan, "skor": skor, "dicoba": dicoba,
+            "ringkas": ringkas, "n": n_huruf, "yakin": yakin}
+
+
+def _judul(L, teks):
+    L.append("")
+    L.append("=" * 72)
+    L.append(teks)
+    L.append("=" * 72)
+
+
+# ----------------------------------------------------------------------
+# CAESAR: brute force 26 kunci
+# ----------------------------------------------------------------------
+def analisis_caesar(teks, bahasa, crib, offset, daftar):
+    c = normalisasi(teks)
+    if len(c) < 2:
+        raise ValueError("Ciphertext Caesar harus berisi huruf A-Z.")
+    L = []
+    _judul(L, "ANALISIS CAESAR (tanpa kunci)")
+    L.append("Rumus enkripsi : C = (P + k) mod 26      Rumus dekripsi : P = (C - k) mod 26")
+    L.append("Ruang kunci    : hanya 26 kemungkinan (k = 0..25) -> cukup brute force.")
+    L.append("")
+    L.append("LANGKAH 1 - Coba semua 26 geseran, nilai kemiripan tiap hasil dengan bahasa alami")
+    L.append("  chi2 = selisih frekuensi huruf dengan frekuensi bahasa (kecil = mirip)")
+    L.append("  kata = proporsi huruf yang membentuk kata umum (besar = mirip)")
+    L.append("")
+    L.append(f"  {'k':>2} {'huruf kunci':<11} {'chi2':>7} {'kata':>6}  hasil dekripsi")
+    kand = []
+    for k in range(26):
+        p = caesar_dekripsi(c[:SAMPEL], k)
+        kand.append((k, p, skor_teks(p, bahasa)))
+    terbaik = max(kand, key=lambda x: x[2]["skor"])
+    for k, p, s in kand:
+        tanda = "  <== TERBAIK" if k == terbaik[0] else ""
+        L.append(f"  {k:>2} {ALFABET[k]:<11} {s['chi2']:>7.2f} {s['kata']:>6.2f}  {_pot(p)}{tanda}")
+    k, p, s = terbaik
+    L.append("")
+    L.append("LANGKAH 2 - Pilih kandidat terbaik")
+    urut = sorted(kand, key=lambda x: -x[2]["skor"])
+    L.append(f"  Peringkat 1: k = {urut[0][0]} (skor {urut[0][2]['skor']:.3f}); "
+             f"peringkat 2: k = {urut[1][0]} (skor {urut[1][2]['skor']:.3f})")
+    L.append(f"  Bahasa yang paling cocok: {s['bahasa']}")
+    L.append("")
+    L.append(f"KESIMPULAN: kunci Caesar k = {k} (huruf '{ALFABET[k]}' = geser {k} posisi)")
+    y = keyakinan(s, len(c))
+    L.append(f"Keyakinan  : {y}")
+    return _hasil("1", str(k), L, s, 26, f"Caesar, brute force 26 kunci", len(c), y)
+
+
+# ----------------------------------------------------------------------
+# VIGENERE: Kasiski + Index of Coincidence + frekuensi per kolom + kamus
+# ----------------------------------------------------------------------
+def _periode_minimal(k):
+    for p in range(1, len(k) + 1):
+        if len(k) % p == 0 and k[:p] * (len(k) // p) == k:
+            return k[:p]
+    return k
+
+
+def _chi_geser(kol, bahasa):
+    cnt = _hitung(kol)
+    m = len(kol)
+    hasil = []
+    for s in range(26):
+        chi = 0.0
+        for i in range(26):
+            e = m * PROB[bahasa][i]
+            chi += (cnt[(i + s) % 26] - e) ** 2 / e
+        hasil.append((chi / m, s))
+    hasil.sort()
+    return hasil
+
+
+def _kunci_dari_panjang(teks, panjang, bahasa):
+    terbaik = None
+    for b in _daftar_bahasa(bahasa):
+        kolom = [teks[i::panjang] for i in range(panjang)]
+        rinci = [_chi_geser(k, b) for k in kolom]
+        total = sum(r[0][0] for r in rinci) / panjang
+        if terbaik is None or total < terbaik["chi"]:
+            terbaik = {"kunci": "".join(ALFABET[r[0][1]] for r in rinci), "chi": total,
+                       "bahasa": b, "rinci": rinci}
+    return terbaik
+
+
+def _kasiski(teks):
+    t = teks[:SAMPEL]
+    jarak = []
+    for pj in (4, 3):
+        posisi = {}
+        for i in range(len(t) - pj + 1):
+            posisi.setdefault(t[i:i + pj], []).append(i)
+        for g, ps in posisi.items():
+            if len(ps) > 1:
+                for a, b in zip(ps, ps[1:]):
+                    jarak.append((g, b - a))
+        if jarak:
+            break
+    tally = {f: sum(1 for _, d in jarak if d % f == 0) for f in range(2, 21)}
+    return jarak, tally
+
+
+def _sempurnakan_vigenere(c, kunci, bahasa):
+    """Coordinate ascent: ubah satu huruf kunci sekali waktu bila membuat teks lebih mirip bahasa."""
+    sampel = c[:1200]
+    kunci = list(kunci)
+    terbaik = skor_teks(vigenere_dekripsi(sampel, "".join(kunci)), bahasa)["skor"]
+    berubah = []
+    for _ in range(2):
+        ada = False
+        for j in range(len(kunci)):
+            asli = kunci[j]
+            for h in ALFABET:
+                if h == asli:
+                    continue
+                kunci[j] = h
+                sk = skor_teks(vigenere_dekripsi(sampel, "".join(kunci)), bahasa)["skor"]
+                if sk > terbaik + 1e-9:
+                    terbaik, asli, ada = sk, h, True
+                    berubah.append((j + 1, h))
+            kunci[j] = asli
+        if not ada:
+            break
+    return "".join(kunci), berubah
+
+
+def serangan_kamus(kode, teks, bahasa, daftar):
+    """Coba tiap kata sebagai kunci (Vigenere/Playfair). Mengembalikan daftar (skor, kata)."""
+    dekripsi = vigenere_dekripsi if kode == "2" else playfair_dekripsi
+    s = teks[:SAMPEL_KAMUS]
+    if kode == "3":
+        s = s.replace("J", "I")
+        if len(s) % 2:
+            s = s[:-1]
+    kata_uniq = []
+    lihat = set()
+    for w in daftar:
+        w = normalisasi(w)
+        if kode == "3":
+            w = w.replace("J", "I")
+        if len(w) >= 2 and w not in lihat:
+            lihat.add(w)
+            kata_uniq.append(w)
+    langs = _daftar_bahasa(bahasa)
+    if len(kata_uniq) > 400:                         # saring cepat dengan frekuensi huruf tunggal
+        pra = []
+        for w in kata_uniq:
+            pra.append((_logp_teks(dekripsi(s[:80 - (80 % 2)], w), langs), w))
+        kata_uniq = [w for _, w in heapq.nlargest(80, pra)]
+    hasil = []
+    for w in kata_uniq:
+        p = dekripsi(s, w)
+        hasil.append((skor_teks(p, bahasa), w, p))
+    hasil.sort(key=lambda x: -x[0]["skor"])
+    return hasil, len(lihat)
+
+
+def analisis_vigenere(teks, bahasa, crib, offset, daftar):
+    c = normalisasi(teks)
+    n = len(c)
+    if n < 4:
+        raise ValueError("Ciphertext Vigenere terlalu pendek untuk dianalisis.")
+    L = []
+    _judul(L, "ANALISIS VIGENERE (tanpa kunci)")
+    L.append("Rumus enkripsi : C[i] = (P[i] + K[i mod m]) mod 26   (m = panjang kunci)")
+    L.append("Ide serangan   : jika panjang kunci m diketahui, tiap kolom ke-j (huruf ke j, j+m, j+2m, ...)")
+    L.append("                 hanyalah sandi Caesar -> dipecahkan dengan analisis frekuensi.")
+    L.append("")
+    L.append("LANGKAH 0 - Ciri ciphertext")
+    L += ["  " + x for x in _ciri_ciphertext(c)]
+    if n < 100:
+        L.append(f"  PERHATIAN: hanya {n} huruf. Analisis statistik Vigenere butuh sekitar 100+ huruf; "
+                 f"hasil mungkin meleset.")
+
+    # --- Kasiski
+    L.append("")
+    L.append("LANGKAH 1 - Uji Kasiski: jarak antar urutan huruf berulang")
+    jarak, tally = _kasiski(c)
+    if jarak:
+        L.append("  Urutan berulang (maks 8 ditampilkan):  urutan -> jarak")
+        for g, d in jarak[:8]:
+            L.append(f"    {g:<5} -> {d}")
+        top = sorted(tally.items(), key=lambda x: (-x[1], x[0]))[:5]
+        L.append("  Faktor persekutuan jarak (panjang kunci biasanya faktor dari jarak-jarak ini):")
+        L.append("    " + ", ".join(f"{f} ({v}x)" for f, v in top if v))
+    else:
+        L.append("  Tidak ada urutan 3-4 huruf yang berulang (ciphertext pendek / kunci panjang).")
+
+    # --- IC per panjang kunci
+    L.append("")
+    L.append("LANGKAH 2 - Index of Coincidence (IC) rata-rata kolom untuk tiap panjang kunci m")
+    L.append("  IC bahasa alami ~0.065-0.075; IC acak ~0.0385. Panjang kunci benar -> IC tinggi.")
+    maks = min(20, max(1, n // 4))
+    ic_rata = {}
+    for m in range(1, maks + 1):
+        kolom = [c[i::m] for i in range(m)]
+        nilai = [indeks_koinsidensi(k) for k in kolom if len(k) >= 2]
+        ic_rata[m] = sum(nilai) / len(nilai) if nilai else 0.0
+    ic_max = max(ic_rata.values())
+    L.append(f"  {'m':>3} {'IC rata-rata':>13}")
+    for m, v in ic_rata.items():
+        L.append(f"  {m:>3} {v:>13.4f}  {_bar(v, 0.08)}")
+    lmin = next((m for m, v in ic_rata.items() if v >= 0.9 * ic_max), 1)
+    top_ic = [m for m, _ in sorted(ic_rata.items(), key=lambda x: -x[1])[:3]]
+    kandidat_m = sorted({lmin, *top_ic})
+    L.append(f"  Kandidat panjang kunci: {kandidat_m} (terkecil yang IC-nya mendekati maksimum: {lmin})")
+
+    # --- Frekuensi per kolom
+    L.append("")
+    L.append("LANGKAH 3 - Analisis frekuensi per kolom untuk tiap kandidat panjang kunci")
+    L.append("  Tiap kolom dicoba 26 geseran; geseran dengan chi2 terkecil dipilih sebagai huruf kunci.")
+    ev = []
+    for m in kandidat_m:
+        hasil = _kunci_dari_panjang(c, m, bahasa)
+        kunci = _periode_minimal(hasil["kunci"])
+        p = vigenere_dekripsi(c[:SAMPEL], kunci)
+        s = skor_teks(p, bahasa)
+        ev.append((s["skor"] - 0.004 * len(kunci), m, kunci, p, s, hasil))
+        L.append(f"  m = {m}: huruf kunci per kolom = {hasil['kunci']}"
+                 + (f"  (periode minimal: {kunci})" if kunci != hasil["kunci"] else ""))
+        for j, r in enumerate(hasil["rinci"][:6]):
+            alt = ", ".join(f"{ALFABET[s_]} ({chi:.2f})" for chi, s_ in r[:3])
+            L.append(f"      kolom {j + 1}: terbaik {alt}")
+        if len(hasil["rinci"]) > 6:
+            L.append(f"      ... ({len(hasil['rinci']) - 6} kolom lain)")
+        L.append(f"      -> kunci '{kunci}', skor kemiripan {s['skor']:.3f} (chi2 {s['chi2']:.2f}, kata {s['kata']:.2f})")
+    ev.sort(key=lambda x: -x[0])
+    _, m_best, k_stat, p_stat, s_stat, _h = ev[0]
+    if len(k_stat) <= 24:
+        L.append("")
+        L.append("LANGKAH 3b - Penyempurnaan: tiap huruf kunci diuji ulang dengan kecocokan kata")
+        L.append("  (menolong bila satu kolom terlalu pendek untuk analisis frekuensi yang pasti)")
+        k_baru, ubah = _sempurnakan_vigenere(c, k_stat, bahasa)
+        if ubah:
+            L.append("  Perubahan huruf kunci: " + ", ".join(f"kolom {j} -> {h}" for j, h in ubah))
+            k_stat = k_baru
+            p_stat = vigenere_dekripsi(c[:SAMPEL], k_stat)
+            s_stat = skor_teks(p_stat, bahasa)
+        else:
+            L.append("  Tidak ada perubahan; huruf kunci sudah optimal.")
+        L.append(f"  Kunci kandidat statistik: '{k_stat}' (skor {s_stat['skor']:.3f})")
+
+    # --- kamus
+    L.append("")
+    L.append("LANGKAH 4 - Serangan kamus (coba daftar kata sebagai kunci)")
+    sumber = list(KATA_KUNCI_BAWAAN) + list(daftar or [])
+    kam, jumlah = serangan_kamus("2", c, bahasa, sumber)
+    L.append(f"  {jumlah} kata kunci dicoba (bawaan{' + wordlist unggahan' if daftar else ''}). 5 terbaik:")
+    for s, w, p in kam[:5]:
+        L.append(f"    {w:<14} skor {s['skor']:>7.3f}  kata {s['kata']:.2f}  {_pot(p, 34)}")
+
+    dicoba = 26 * sum(kandidat_m) + jumlah
+    # --- pilih
+    L.append("")
+    s_k, w_k, _p = kam[0] if kam else ({"skor": -9, "kata": 0, "chi2": 9, "bahasa": "-"}, "", "")
+    pakai_kamus = bool(kam) and (s_k["kata"] >= 0.35 and s_k["skor"] > s_stat["skor"] - 0.05
+                                 or s_k["skor"] > s_stat["skor"] + 0.02)
+    if pakai_kamus and w_k == k_stat:
+        kunci, s = w_k, s_k
+        L.append(f"KESIMPULAN: kunci Vigenere = '{kunci}' (ditemukan analisis statistik dan dikonfirmasi "
+                 f"serangan kamus)")
+    elif pakai_kamus:
+        kunci, s = w_k, s_k
+        L.append(f"KESIMPULAN: kunci Vigenere = '{kunci}' (ditemukan lewat serangan kamus)")
+    else:
+        kunci, s = k_stat, s_stat
+        L.append(f"KESIMPULAN: kunci Vigenere = '{kunci}' (panjang {len(kunci)}, ditemukan lewat "
+                 f"Kasiski/IC + frekuensi kolom)")
+    y = keyakinan(s, n)
+    L.append(f"Keyakinan  : {y}")
+    return _hasil("2", kunci, L, s, dicoba, "Vigenere, Kasiski/IC + frekuensi kolom + kamus", n, y)
+
+
+# ----------------------------------------------------------------------
+# PLAYFAIR: tidak ada serangan frekuensi huruf tunggal -> serangan kamus
+# ----------------------------------------------------------------------
+def analisis_playfair(teks, bahasa, crib, offset, daftar):
+    c = normalisasi(teks)
+    n = len(c)
+    if n < 4:
+        raise ValueError("Ciphertext Playfair terlalu pendek untuk dianalisis.")
+    L = []
+    _judul(L, "ANALISIS PLAYFAIR (tanpa kunci)")
+    L.append("Playfair mengenkripsi pasangan huruf memakai tabel 5x5 dari kata kunci.")
+    L.append("Ruang kunci = 25! ~ 1,55 x 10^25 susunan tabel -> TIDAK bisa di-brute-force,")
+    L.append("dan frekuensi huruf tunggal tidak berguna (satu huruf bisa jadi banyak huruf berbeda).")
+    L.append("")
+    L.append("LANGKAH 0 - Ciri ciphertext")
+    L += ["  " + x for x in _ciri_ciphertext(c)]
+    if n % 2:
+        raise ValueError("Ciphertext Playfair harus berjumlah huruf genap (ciphertext ini ganjil).")
+    pasang = {}
+    for i in range(0, n, 2):
+        pasang[c[i:i + 2]] = pasang.get(c[i:i + 2], 0) + 1
+    top = sorted(pasang.items(), key=lambda x: -x[1])[:6]
+    L.append("  Digraf paling sering: " + ", ".join(f"{d} ({v}x)" for d, v in top))
+    L.append("  (Digraf yang sama selalu berasal dari digraf plaintext yang sama; contoh dalam bahasa Inggris: TH, HE;"
+             " Indonesia: AN, NG, KA.)")
+    L.append("")
+    L.append("LANGKAH 1 - Serangan kamus: tiap kata dijadikan kunci, ciphertext didekripsi, lalu dinilai")
+    sumber = list(KATA_KUNCI_BAWAAN) + list(daftar or [])
+    kam, jumlah = serangan_kamus("3", c, bahasa, sumber)
+    L.append(f"  {jumlah} kata kunci dicoba (bawaan{' + wordlist unggahan' if daftar else ''}). 8 terbaik:")
+    L.append(f"  {'kunci':<14} {'skor':>7} {'kata':>6} {'chi2':>6}  hasil dekripsi")
+    for s, w, p in kam[:8]:
+        L.append(f"  {w:<14} {s['skor']:>7.3f} {s['kata']:>6.2f} {s['chi2']:>6.2f}  {_pot(p, 34)}")
+    s, kunci, p = kam[0]
+    L.append("")
+    L.append("LANGKAH 2 - Tabel 5x5 dari kunci terbaik")
+    tabel = playfair_tabel(kunci)
+    for r in range(5):
+        L.append("    " + " ".join(tabel[r * 5:(r + 1) * 5]))
+    L.append("")
+    y = keyakinan(s, n)
+    if s["kata"] < 0.18 and s["chi2"] > 0.4:
+        L.append("KESIMPULAN: tidak ada kata kunci dalam daftar yang menghasilkan teks terbaca.")
+        L.append("  Kunci kemungkinan berada di luar daftar. Unggah wordlist yang lebih besar, atau")
+        L.append(f"  gunakan kunci terbaik di bawah hanya sebagai tebakan lemah: '{kunci}'.")
+    else:
+        L.append(f"KESIMPULAN: kunci Playfair = '{kunci}' (ditemukan lewat serangan kamus)")
+    L.append(f"Keyakinan  : {y}")
+    return _hasil("3", kunci, L, s, jumlah, "Playfair, serangan kamus", n, y)
+
+
+# ----------------------------------------------------------------------
+# HILL: known-plaintext (eksak) atau serangan statistik per baris
+# ----------------------------------------------------------------------
+def _mm(A, B):
+    return [[sum(A[i][k] * B[k][j] for k in range(len(B))) % 26 for j in range(len(B[0]))]
+            for i in range(len(A))]
+
+
+def _fmt_mat(M):
+    return " ".join(str(x) for baris in M for x in baris)
+
+
+def _hill_known_plaintext(c, n, crib, offset, L):
+    """Hitung K = C * P^-1 (mod 26) dari pasangan blok plaintext-ciphertext yang diketahui."""
+    mulai = -(-offset // n) * n                       # naikkan ke batas blok
+    sub = crib[mulai - offset:]
+    banyak = len(sub) // n
+    L.append(f"  crib '{crib}' pada posisi {offset}; blok berukuran {n} mulai dari posisi {mulai} "
+             f"-> {banyak} blok tersedia (butuh minimal {n}).")
+    if banyak < n:
+        L.append(f"  Crib terlalu pendek: butuh minimal {n * n} huruf (= {n} blok).")
+        return None
+    P_blok = [huruf_ke_angka(sub[i * n:(i + 1) * n]) for i in range(banyak)]
+    c_awal = mulai
+    C_blok = [huruf_ke_angka(c[c_awal + i * n:c_awal + (i + 1) * n]) for i in range(banyak)]
+    if len(C_blok[-1]) < n:
+        P_blok, C_blok = P_blok[:-1], C_blok[:-1]
+    if len(C_blok) < n:
+        return None
+    kombinasi = itertools.islice(itertools.combinations(range(len(C_blok)), n), 60)
+    for idx in kombinasi:
+        nama_blok = ",".join(str(i + 1) for i in idx)
+        P = [[P_blok[j][i] for j in idx] for i in range(n)]               # kolom = blok plaintext
+        C = [[C_blok[j][i] for j in idx] for i in range(n)]
+        try:
+            Pinv = invers_matriks_mod26(P)
+        except ValueError:
+            L.append(f"  Blok {nama_blok}: matriks P tidak punya invers mod 26 (det = "
+                     f"{determinan(P) % 26}), coba kombinasi blok lain.")
+            continue
+        K = _mm(C, Pinv)
+        try:
+            hill_parse_kunci(_fmt_mat(K))
+        except ValueError as e:
+            L.append(f"  Blok {nama_blok}: K hasil tidak valid ({e}).")
+            continue
+        ok = all(_mm(K, [[x] for x in pb]) == [[x] for x in cb] for pb, cb in zip(P_blok, C_blok))
+        L.append(f"  Blok {nama_blok}:")
+        L.append(f"    P (kolom = blok plaintext) = {P}")
+        L.append(f"    C (kolom = blok ciphertext) = {C}")
+        L.append(f"    P^-1 mod 26 = {Pinv}")
+        L.append(f"    K = C x P^-1 mod 26 = {K}")
+        L.append(f"    Uji K pada seluruh {len(C_blok)} blok crib: {'COCOK' if ok else 'TIDAK COCOK'}")
+        if ok:
+            return K
+    L.append("  Tidak ada kombinasi blok yang matriks P-nya punya invers mod 26. Perpanjang crib"
+             " (6-12 huruf biasanya cukup) atau geser posisinya.")
+    return None
+
+
+def _hill_statistik(c, n, bahasa, L):
+    """Serangan ciphertext-only: tiap baris matriks dekripsi dinilai terpisah (unigram)."""
+    langs = _daftar_bahasa(bahasa)
+    angka = huruf_ke_angka(c[:min(len(c) - len(c) % n, 240 - 240 % n)])
+    blok = [angka[i:i + n] for i in range(0, len(angka), n)]
+    L.append(f"  Pakai {len(blok)} blok pertama ({len(angka)} huruf) untuk menilai kandidat baris.")
+    baris_skor = {b: {} for b in langs}
+    for baris in itertools.product(range(26), repeat=n):
+        if all(x % 2 == 0 for x in baris) or all(x % 13 == 0 for x in baris):
+            continue                                   # baris ini membuat matriks tak berinvers
+        huruf = [sum(baris[j] * blk[j] for j in range(n)) % 26 for blk in blok]
+        for b in langs:
+            lp = LOGP[b]
+            baris_skor[b][baris] = sum(lp[h] for h in huruf)
+    L.append(f"  {len(next(iter(baris_skor.values())))} kemungkinan baris diberi nilai; "
+             f"baris bernilai tinggi digabung menjadi matriks (urutan baris ikut diuji), lalu"
+             f" 400 matriks terbaik dinilai ulang dengan kecocokan kata.")
+    kandidat = {}
+    for b in langs:
+        pilih = heapq.nlargest(26 * 26 if n == 2 else 60, baris_skor[b].items(), key=lambda x: x[1])
+        for kombinasi in itertools.product(pilih, repeat=n):
+            D = [list(k[0]) for k in kombinasi]
+            if math.gcd(determinan(D) % 26, 26) != 1:
+                continue
+            kunci_d = tuple(x for r in D for x in r)
+            kandidat[kunci_d] = sum(k[1] for k in kombinasi)
+    top = heapq.nlargest(400, kandidat.items(), key=lambda x: x[1])
+    hasil = []
+    for kd, _sk in top:
+        D = [list(kd[i * n:(i + 1) * n]) for i in range(n)]
+        K = invers_matriks_mod26(D)
+        p = hill_dekripsi(c[:600 - 600 % n], K)
+        hasil.append((skor_teks(p, bahasa), K, p))
+    hasil.sort(key=lambda x: -x[0]["skor"])
+    return hasil, len(kandidat)
+
+
+def analisis_hill(teks, bahasa, crib, offset, daftar):
+    c = normalisasi(teks)
+    n_huruf = len(c)
+    if n_huruf < 4:
+        raise ValueError("Ciphertext Hill terlalu pendek untuk dianalisis.")
+    ukuran = [n for n in (2, 3) if n_huruf % n == 0]
+    if not ukuran:
+        raise ValueError("Jumlah huruf ciphertext Hill harus kelipatan 2 atau 3.")
+    L = []
+    _judul(L, "ANALISIS HILL (tanpa kunci)")
+    L.append("Rumus enkripsi : C = K x P (mod 26)   (P, C = vektor kolom blok huruf; K = matriks kunci n x n)")
+    L.append("Hill 2x2 punya 157.248 kunci valid; 3x3 punya miliaran -> pendekatan cerdas diperlukan:")
+    L.append("  * dengan known plaintext (crib): K = C x P^-1 mod 26 dihitung langsung (aljabar linear)")
+    L.append("  * tanpa crib: tiap baris matriks dinilai terpisah dengan frekuensi huruf (butuh teks cukup panjang)")
+    L.append("")
+    L.append("LANGKAH 0 - Ciri ciphertext")
+    L += ["  " + x for x in _ciri_ciphertext(c)]
+    L.append(f"  Ukuran matriks yang mungkin: {', '.join(f'{n}x{n}' for n in ukuran)}")
+    crib_n = normalisasi(crib or "")
+    dicoba = 0
+    kandidat = []
+    for n in ukuran:
+        L.append("")
+        L.append(f"LANGKAH 1 ({n}x{n}) - " + ("Known-plaintext attack" if crib_n else
+                                              "Serangan statistik per baris"))
+        if crib_n:
+            K = _hill_known_plaintext(c, n, crib_n, offset, L)
+            dicoba += 1
+            if K is not None:
+                p = hill_dekripsi(c[:SAMPEL - SAMPEL % n], K)
+                kandidat.append((skor_teks(p, bahasa), K, p, n, True))
+                L.append(f"  -> K = {K}; dekripsi: {_pot(p)}")
+            else:
+                L.append(f"  -> gagal untuk {n}x{n}.")
+        else:
+            if n_huruf < 8 * n:
+                L.append(f"  Ciphertext {n_huruf} huruf terlalu pendek untuk serangan statistik {n}x{n}; "
+                         f"berikan crib (known plaintext).")
+                continue
+            hasil, jml = _hill_statistik(c, n, bahasa, L)
+            dicoba += jml
+            L.append(f"  {jml} matriks dekripsi valid dievaluasi. 5 terbaik:")
+            L.append(f"  {'kunci K (baris demi baris)':<28} {'skor':>7} {'kata':>6}  hasil dekripsi")
+            for s, K, p in hasil[:5]:
+                L.append(f"  {_fmt_mat(K):<28} {s['skor']:>7.3f} {s['kata']:>6.2f}  {_pot(p, 34)}")
+            if hasil:
+                s, K, p = hasil[0]
+                kandidat.append((s, K, p, n, False))
+    L.append("")
+    if not kandidat:
+        L.append("KESIMPULAN: kunci Hill tidak dapat ditentukan. Tambahkan crib (potongan plaintext yang")
+        L.append("  diketahui, mis. salam pembuka) atau gunakan ciphertext yang lebih panjang.")
+        return _hasil("4", None, L, None, dicoba, "Hill, gagal", n_huruf, None)
+    kandidat.sort(key=lambda x: -x[0]["skor"] - (0.3 if x[4] else 0))
+    s, K, p, n, eksak = kandidat[0]
+    kunci = _fmt_mat(K)
+    L.append(f"KESIMPULAN: kunci Hill {n}x{n} = [{kunci}]"
+             + ("  (dihitung eksak dari known plaintext)" if eksak else "  (hasil serangan statistik)"))
+    y = keyakinan_kata(s, n_huruf)
+    if eksak:
+        y = "Tinggi (K cocok dengan seluruh crib)"
+    L.append(f"Keyakinan  : {y}")
+    return _hasil("4", kunci, L, s, dicoba, f"Hill {n}x{n}, {'known-plaintext' if eksak else 'statistik'}",
+                  n_huruf, y)
+
+
+# ----------------------------------------------------------------------
+# STREAM CIPHER (LCG) & OTP: ciphertext heksadesimal
+# ----------------------------------------------------------------------
+def _parse_hex(teks):
+    bersih = "".join(teks.split())
+    try:
+        return bytes.fromhex(bersih)
+    except ValueError:
+        raise ValueError("Ciphertext OTP / Stream harus heksadesimal yang valid "
+                         "(karakter 0-9 dan A-F, jumlah genap).")
+
+
+def _skor_byte(p):
+    if not p:
+        return (0.0, -9.0)
+    baca = sum(1 for b in p if 32 <= b < 127 or b in (9, 10, 13)) / len(p)
+    huruf = "".join(chr(b).upper() for b in p if 65 <= b <= 90 or 97 <= b <= 122)
+    sk = skor_teks(huruf)["skor"] if len(huruf) >= 5 else -1.0
+    return (baca, sk)
+
+
+def _teks_cetak(p, n=40):
+    s = "".join(chr(b) if 32 <= b < 127 else "." for b in p[:n])
+    return s + ("..." if len(p) > n else "")
+
+
+def analisis_stream(teks, bahasa, crib, offset, daftar):
+    data = _parse_hex(teks)
+    if not data:
+        raise ValueError("Ciphertext kosong.")
+    L = []
+    _judul(L, "ANALISIS STREAM CIPHER LCG (tanpa kunci)")
+    L.append("Keystream : x[i+1] = (5 * x[i] + 1) mod 256, x[0] = seed; plaintext = ciphertext XOR keystream.")
+    L.append("Kunci     : seed 0..255 saja -> hanya 256 kemungkinan, sangat lemah (bahkan 1 byte plaintext")
+    L.append("            yang diketahui sudah cukup untuk menghitung seed).")
+    L.append("")
+    L.append(f"Ciphertext: {len(data)} byte")
+    L.append("")
+    L.append("LANGKAH 1 - Brute force 256 seed, nilai keterbacaan tiap hasil (ASCII tercetak + kemiripan bahasa)")
+    sampel = data[:2000]
+    kand = []
+    for seed in range(256):
+        p = xor_bytes(sampel, keystream_lcg(seed, len(sampel)))
+        baca, sk = _skor_byte(p)
+        kand.append((baca, sk, seed, p))
+    kand.sort(key=lambda x: (-x[0], -x[1]))
+    L.append(f"  {'seed':>4} {'terbaca':>8} {'skor':>7}  hasil dekripsi (40 byte pertama)")
+    for baca, sk, seed, p in kand[:8]:
+        tanda = "  <== TERBAIK" if seed == kand[0][2] else ""
+        L.append(f"  {seed:>4} {baca * 100:>7.1f}% {sk:>7.2f}  {_teks_cetak(p)}{tanda}")
+    L.append(f"  ... ({len(kand) - 8} seed lain dengan keterbacaan lebih rendah)")
+    baca, sk, seed, p = kand[0]
+    kedua = kand[1][0]
+    crib_b = (crib or "").encode("utf-8")
+    seed_crib = None
+    if crib_b:
+        L.append("")
+        L.append("LANGKAH 2 - Known plaintext: hitung seed secara aljabar")
+        i = offset
+        if i + len(crib_b) > len(data):
+            L.append("  Crib melewati panjang ciphertext; dilewati.")
+        else:
+            x = data[i] ^ crib_b[0]
+            L.append(f"  keystream[{i}] = ciphertext[{i}] XOR crib[0] = 0x{data[i]:02x} XOR 0x{crib_b[0]:02x} = {x}")
+            L.append(f"  keystream[{i}] = x[{i + 1}], mundurkan LCG {i + 1} langkah dengan x[j-1] = (x[j] - 1) * 205 mod 256")
+            L.append("  (205 adalah invers dari 5 mod 256, karena 5 x 205 = 1025 = 1 mod 256)")
+            for _ in range(i + 1):
+                x = ((x - 1) * 205) % 256
+            seed_crib = x
+            cocok = xor_bytes(data[i:i + len(crib_b)], keystream_lcg(seed_crib, i + len(crib_b))[i:]) == crib_b
+            L.append(f"  seed = {seed_crib}; uji pada seluruh crib: {'COCOK' if cocok else 'TIDAK COCOK'}")
+            if cocok:
+                seed = seed_crib
+                p = xor_bytes(sampel, keystream_lcg(seed, len(sampel)))
+                baca, sk = _skor_byte(p)
+            else:
+                seed_crib = None
+    L.append("")
+    if baca >= 0.95 and (kedua < 0.9 or seed_crib is not None):
+        y = "Tinggi"
+    elif baca >= 0.9:
+        y = "Sedang"
+    else:
+        y = "Rendah (tidak ada seed yang menghasilkan teks terbaca)"
+    if baca >= 0.9:
+        L.append(f"KESIMPULAN: seed = {seed} (keterbacaan {baca * 100:.1f}%)")
+        L.append(f"Keyakinan  : {y}")
+        return _hasil("6", str(seed), L, {"skor": sk, "kata": 0, "chi2": 0, "bahasa": "-"}, 256,
+                      "Stream LCG, brute force 256 seed", len(data), y)
+    L.append("KESIMPULAN: tidak ada seed LCG (0-255) yang menghasilkan teks terbaca.")
+    L.append("  Ciphertext ini kemungkinan bukan Stream Cipher LCG (mis. One-Time Pad), atau plaintext-nya biner.")
+    return _hasil("6", None, L, None, 256, "Stream LCG, gagal", len(data), None)
+
+
+def analisis_otp(teks, bahasa, crib, offset, daftar):
+    data = _parse_hex(teks)
+    if not data:
+        raise ValueError("Ciphertext kosong.")
+    n = len(data)
+    L = []
+    _judul(L, "ANALISIS ONE-TIME PAD (tanpa kunci)")
+    L.append("Enkripsi OTP : C = P XOR K, K acak sepanjang pesan dan dipakai sekali saja.")
+    L.append(f"Ciphertext   : {n} byte  ->  ada 2^{8 * n} kemungkinan kunci, dan SETIAP plaintext {n} byte")
+    L.append("               punya tepat satu kunci yang cocok.")
+    L.append("")
+    L.append("KESIMPULAN: OTP tidak dapat dipecahkan tanpa kunci (perfect secrecy, Shannon 1949).")
+    L.append("  Aplikasi tidak bisa mengetahui kunci maupun plaintext; ciphertext tidak memuat informasi")
+    L.append("  tentang isi pesan selain panjangnya.")
+    L.append("")
+    L.append("LANGKAH 1 - Demonstrasi: dua 'plaintext' berbeda sama-sama masuk akal")
+    L.append("  Untuk dugaan plaintext P apa pun, kunci yang bersesuaian adalah K = C XOR P:")
+    for kalimat in ("SERANGAN FAJAR DIMULAI PUKUL ENAM", "RAPAT DITUNDA SAMPAI HARI JUMAT DEPAN"):
+        cand = (kalimat * (n // len(kalimat) + 1)).encode()[:n]
+        kunci = xor_bytes(data, cand)
+        L.append(f"    dugaan P = {_teks_cetak(cand, 36)}")
+        L.append(f"             K = {kunci[:18].hex()}{'...' if n > 18 else ''}")
+    L.append("  Keduanya konsisten dengan ciphertext yang sama -> tidak ada cara memilih yang benar.")
+    crib_b = (crib or "").encode("utf-8")
+    if crib_b:
+        L.append("")
+        L.append("LANGKAH 2 - Known plaintext: sebagian kunci terbuka")
+        i = offset
+        if i + len(crib_b) > n:
+            L.append("  Crib melewati panjang ciphertext; dilewati.")
+        else:
+            bagian = xor_bytes(data[i:i + len(crib_b)], crib_b)
+            L.append(f"  K[{i}..{i + len(crib_b) - 1}] = C XOR crib = {bagian.hex()}")
+            L.append(f"  Hanya {len(crib_b)} dari {n} byte kunci yang terbuka; sisanya tetap tidak diketahui.")
+    L.append("")
+    L.append("CATATAN: OTP menjadi lemah hanya jika kunci dipakai ulang (two-time pad): C1 XOR C2 = P1 XOR P2.")
+    return _hasil("5", None, L, None, 0, "OTP: tidak dapat dipecahkan", n, None)
+
+
+# ----------------------------------------------------------------------
+# PENGENDALI: pilih analisis & mode otomatis
+# ----------------------------------------------------------------------
+_ANALIS = {"1": analisis_caesar, "2": analisis_vigenere, "3": analisis_playfair,
+           "4": analisis_hill, "5": analisis_otp, "6": analisis_stream}
+
+
+def _mirip_hex(teks):
+    bersih = "".join(teks.split())
+    return (len(bersih) >= 2 and len(bersih) % 2 == 0
+            and all(ch in "0123456789abcdefABCDEF" for ch in bersih)
+            and any(ch.isdigit() for ch in bersih))
+
+
+def _analisis_auto(teks, bahasa, crib, offset, daftar):
+    L = []
+    _judul(L, "ANALISIS OTOMATIS (tanpa kunci)")
+    if _mirip_hex(teks):
+        L.append("Jenis ciphertext: heksadesimal (ada angka 0-9) -> keluaran One-Time Pad atau Stream Cipher.")
+        L.append("Algoritma klasik (Caesar/Vigenere/Playfair/Hill) selalu menghasilkan huruf A-Z saja.")
+        st = analisis_stream(teks, bahasa, crib, offset, daftar)
+        if st["kunci"] is not None:
+            L.append("Seed LCG ditemukan, jadi ini Stream Cipher.")
+            st["laporan"] = L + st["laporan"]
+            return st
+        ot = analisis_otp(teks, bahasa, crib, offset, daftar)
+        L.append("Tidak ada seed LCG yang cocok -> kemungkinan One-Time Pad.")
+        ot["laporan"] = L + st["laporan"] + ot["laporan"]
+        ot["dicoba"] = st["dicoba"]
+        return ot
+    c = normalisasi(teks)
+    L.append("Jenis ciphertext: huruf A-Z -> kandidat Caesar, Vigenere, Playfair, Hill.")
+    L += ["  " + x for x in _ciri_ciphertext(c)]
+    percobaan = []
+    for kode in ("1", "2", "3", "4"):
+        if kode == "3" and (len(c) % 2 or "J" in c):
+            continue
+        if kode == "4" and not (len(c) % 2 == 0 or len(c) % 3 == 0):
+            continue
+        if kode == "4" and len(c) < 24 and not normalisasi(crib or ""):
+            continue
+        try:
+            percobaan.append(_ANALIS[kode](teks, bahasa, crib, offset, daftar))
+        except ValueError:
+            continue
+    percobaan = [r for r in percobaan if r["kunci"] is not None and r["skor"]]
+    if not percobaan:
+        raise ValueError("Tidak ada algoritma yang berhasil dianalisis. Coba pilih algoritma secara manual.")
+    terbaik = None
+    for r in percobaan:
+        if terbaik is None or r["skor"]["skor"] > terbaik["skor"]["skor"] + 0.05:
+            terbaik = r
+    L.append("")
+    L.append("PERBANDINGAN HASIL TIAP ALGORITMA (skor kemiripan dengan bahasa alami; makin besar makin baik)")
+    L.append(f"  {'algoritma':<10} {'kunci':<18} {'skor':>7} {'kata':>6} {'chi2':>6}  dekripsi")
+    for r in percobaan:
+        s = r["skor"]
+        nama = ALGORITMA[r["kode"]][0]
+        mark = "  <== DIPILIH" if r is terbaik else ""
+        kunci = r["kunci"] if len(r["kunci"]) <= 18 else r["kunci"][:15] + "..."
+        L.append(f"  {nama:<10} {kunci:<18} {s['skor']:>7.3f} {s['kata']:>6.2f} {s['chi2']:>6.2f}{mark}")
+    L.append("  Aturan: algoritma yang lebih sederhana dipilih kecuali yang lain jelas lebih baik.")
+    terbaik = dict(terbaik)
+    terbaik["laporan"] = L + terbaik["laporan"]
+    terbaik["dicoba"] = sum(r["dicoba"] for r in percobaan)
+    return terbaik
+
+
+def analisis_ciphertext(pilihan, teks, bahasa="Auto", crib="", offset=0, daftar=None):
+    """pilihan: 'auto' atau kode algoritma '1'..'6'. Mengembalikan dict hasil analisis."""
+    t0 = time.perf_counter()
+    if not teks or not teks.strip():
+        raise ValueError("Ciphertext kosong.")
+    if pilihan == "auto":
+        hasil = _analisis_auto(teks, bahasa, crib, offset, daftar)
+    else:
+        if pilihan in ("1", "2", "3", "4") and _mirip_hex(teks):
+            raise ValueError("Ciphertext berupa heksadesimal (ada angka). Pilih One-Time Pad atau "
+                             "Stream Cipher, atau gunakan Auto-detect.")
+        hasil = _ANALIS[pilihan](teks, bahasa, crib, offset, daftar)
+    hasil["waktu_ms"] = (time.perf_counter() - t0) * 1000
+    return hasil
+
+
+
+# ----------------------------------------------------------------------
+# ADAPTER ANALISIS: jalankan analisis, lalu verifikasi dengan dekripsi backend
+# ----------------------------------------------------------------------
+def jalankan_analisis(pilihan, teks, path_file, bahasa, crib, offset, path_wordlist):
+    """Analisis ciphertext tanpa kunci. Jika kunci ditemukan, plaintext dihitung ulang memakai
+    jalankan_dekripsi (backend asli) sehingga hasil dan nama file konsisten dengan tab Decrypt."""
+    t_awal = time.perf_counter()
+    cipher = baca_teks(path_file) if path_file else teks
+    daftar = baca_teks(path_wordlist).split()[:MAKS_KAMUS] if path_wordlist else None
+    h = analisis_ciphertext(pilihan, cipher, bahasa, crib, offset, daftar)
+    laporan = list(h["laporan"])
+    out = {"kode": h["kode"], "algoritma": ALGORITMA[h["kode"]][0], "kunci": h["kunci"],
+           "yakin": h["yakin"], "dicoba": h["dicoba"], "waktu_ms": h["waktu_ms"],
+           "metode": h["ringkas"], "teks_hasil": "", "bytes_hasil": None,
+           "nama_hasil": None, "nama_kunci": None}
+    _judul(laporan, "HASIL AKHIR")
+    if h["kunci"] is None:
+        laporan.append("Kunci   : tidak dapat ditentukan")
+        laporan.append("Plaintext: tidak dapat dipulihkan")
+    else:
+        laporan.append(f"Algoritma: {out['algoritma']}")
+        laporan.append(f"Kunci    : {h['kunci']}")
+        try:
+            d = jalankan_dekripsi(h["kode"], None if path_file else cipher, path_file, h["kunci"])
+            out["teks_hasil"], out["bytes_hasil"] = d["teks_hasil"], d["bytes_hasil"]
+            out["nama_hasil"] = d["nama_hasil"]
+            out["nama_kunci"] = d["nama_hasil"][:-len(".dec.txt")] + ".key.txt"
+            tampil = out["teks_hasil"]
+            laporan.append("Verifikasi: kunci dipakai pada fungsi dekripsi backend -> berhasil.")
+            laporan.append(f"Plaintext: {tampil[:600]}" + ("..." if len(tampil) > 600 else ""))
+        except Exception as e:                              # noqa: BLE001
+            laporan.append(f"Verifikasi gagal: {pesan_error(e)}")
+    out["laporan"] = "\n".join(laporan).lstrip("\n")
+    out["waktu_total_s"] = time.perf_counter() - t_awal
+    return out
+
+
 # ----------------------------------------------------------------------
 # ASET GAMBAR 
 # LOGO_PNG: logo sidebar, EMBLEM_PNG: emblem samar sidebar, IKON_PNG: ikon jendela/taskbar
@@ -2526,6 +3455,424 @@ class HalamanBenchmark(HalamanLog):
 
 
 # ======================================================================
+# HALAMAN ANALYZE (kriptanalisis tanpa kunci)
+# ======================================================================
+NAMA_ANALISIS = {"Auto-detect": "auto", **NAMA_ALGO}
+PILIHAN_BAHASA = {"Auto (Indonesia / English)": "Auto", "Indonesia": "Indonesia",
+                  "English": "English"}
+HINT_ANALISIS = {
+    "auto": "Otomatis: mengenali jenis ciphertext (huruf atau heksadesimal), mencoba algoritma yang "
+            "mungkin, lalu memilih hasil yang paling terbaca.",
+    "1": "Brute force 26 geseran; tabel semua kandidat ditampilkan. Beberapa kata sudah cukup.",
+    "2": "Kasiski + Index of Coincidence + frekuensi per kolom + serangan kamus. Idealnya 100+ huruf.",
+    "3": "Playfair tidak bisa diserang dengan frekuensi huruf. Serangan kamus: kata kunci yang tidak "
+         "ada di daftar tidak bisa ditemukan (unggah wordlist untuk memperluas).",
+    "4": "Dengan crib (potongan plaintext yang diketahui, 6-12 huruf) kunci dihitung eksak. Tanpa crib: "
+         "serangan statistik, butuh teks panjang.",
+    "5": "OTP tidak dapat dipecahkan. Aplikasi menjelaskan alasannya; crib hanya membuka sebagian kunci.",
+    "6": "Ciphertext heksadesimal. Brute force 256 seed; crib mempercepat dan memastikan seed.",
+}
+
+
+class HalamanAnalisis(ctk.CTkFrame):
+    def __init__(self, master, app):
+        super().__init__(master, fg_color=BG, corner_radius=0)
+        self.app = app
+        self.file_path = None
+        self.wordlist_path = None
+        self.hasil = None
+        self.running = False
+        self.laporan = ""
+        self.plain_tampil = ""
+
+        self.grid_columnconfigure(0, weight=3, uniform="kol")
+        self.grid_columnconfigure(1, weight=2, uniform="kol")
+        self.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(self, text="Analyze", font=fnt(28, "bold"), text_color=INK,
+                     anchor="w").grid(row=0, column=0, columnspan=2, sticky="w", padx=28,
+                                      pady=(24, 10))
+        self._bangun_input()
+        kanan = ctk.CTkFrame(self, fg_color="transparent")
+        kanan.grid(row=1, column=1, sticky="nsew", padx=(10, 28), pady=(0, 14))
+        kanan.grid_columnconfigure(0, weight=1)
+        kanan.grid_rowconfigure(0, weight=1)
+        self._bangun_ringkasan(kanan)
+        self._bangun_aksi(kanan)
+        self._bangun_laporan()
+        self._ganti_algoritma()
+        self._tampil_awal()
+
+    # ------------------------------------------------------------ input
+    def _bangun_input(self):
+        k = kartu(self)
+        k.grid(row=1, column=0, sticky="nsew", padx=(28, 10), pady=(0, 14))
+        k.grid_columnconfigure(0, weight=1)
+        k.grid_rowconfigure(3, weight=1)
+        pad = {"padx": 20}
+
+        baris = ctk.CTkFrame(k, fg_color="transparent")
+        baris.grid(row=0, column=0, sticky="ew", pady=(16, 0), **pad)
+        baris.grid_columnconfigure(0, weight=3)
+        baris.grid_columnconfigure(1, weight=2)
+        ctk.CTkLabel(baris, text="Cryptography Algorithm", font=fnt(14, "bold"), text_color=INK,
+                     anchor="w").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ctk.CTkLabel(baris, text="Bahasa Plaintext", font=fnt(14, "bold"), text_color=INK,
+                     anchor="w").grid(row=0, column=1, sticky="w", padx=(10, 0), pady=(0, 6))
+        gaya = dict(height=38, corner_radius=10, fg_color=NEUTRAL, button_color=NEUTRAL_H,
+                    button_hover_color="#DAD3BE", text_color=INK, dropdown_fg_color=CARD,
+                    dropdown_hover_color=BLUE, dropdown_text_color=INK, font=fnt(13),
+                    dropdown_font=fnt(13), anchor="w")
+        self.algo_var = ctk.StringVar(value="Auto-detect")
+        ctk.CTkOptionMenu(baris, values=list(NAMA_ANALISIS), variable=self.algo_var,
+                          command=lambda _v: self._ganti_algoritma(), **gaya
+                          ).grid(row=1, column=0, sticky="ew")
+        self.bahasa_var = ctk.StringVar(value="Auto (Indonesia / English)")
+        ctk.CTkOptionMenu(baris, values=list(PILIHAN_BAHASA), variable=self.bahasa_var, **gaya
+                          ).grid(row=1, column=1, sticky="ew", padx=(10, 0))
+
+        ctk.CTkLabel(k, text="Ciphertext (tanpa kunci)", font=fnt(14, "bold"), text_color=INK,
+                     anchor="w").grid(row=2, column=0, sticky="w", pady=(12, 6), **pad)
+        self.input = kotak_teks(k, mono=True, wrap="char", height=90)
+        self.input.grid(row=3, column=0, sticky="nsew", **pad)
+
+        up = ctk.CTkFrame(k, fg_color="transparent")
+        up.grid(row=4, column=0, sticky="ew", pady=(10, 4), **pad)
+        up.grid_columnconfigure(1, weight=1)
+        tombol(up, "Upload .txt File", self._upload_input, "blue", width=150).grid(row=0, column=0)
+        self.lbl_file = ctk.CTkLabel(up, text="Belum ada file - tempel ciphertext di atas",
+                                     font=fnt(12), text_color=MUTED, anchor="w")
+        self.lbl_file.grid(row=0, column=1, sticky="w", padx=12)
+        self.btn_hapus_file = tombol(up, "Remove", self._hapus_file, "ghost", width=70, height=30)
+        self.btn_hapus_file.grid(row=0, column=2)
+        self.btn_hapus_file.grid_remove()
+
+        ctk.CTkLabel(k, text="Informasi Tambahan (opsional)", font=fnt(14, "bold"),
+                     text_color=INK, anchor="w").grid(row=5, column=0, sticky="w",
+                                                      pady=(10, 6), **pad)
+        crib = ctk.CTkFrame(k, fg_color="transparent")
+        crib.grid(row=6, column=0, sticky="ew", **pad)
+        crib.grid_columnconfigure(0, weight=1)
+        ent = dict(height=36, corner_radius=10, fg_color=FIELD, border_color=BORDER,
+                   border_width=1, text_color=INK, placeholder_text_color=MUTED, font=fnt(13))
+        self.ent_crib = ctk.CTkEntry(crib, placeholder_text="Known plaintext / crib (mis. BELAJAR)",
+                                     **ent)
+        self.ent_crib.grid(row=0, column=0, sticky="ew")
+        self.ent_offset = ctk.CTkEntry(crib, placeholder_text="Posisi (0)", width=100, **ent)
+        self.ent_offset.grid(row=0, column=1, padx=(10, 0))
+
+        wl = ctk.CTkFrame(k, fg_color="transparent")
+        wl.grid(row=7, column=0, sticky="ew", pady=(8, 0), **pad)
+        wl.grid_columnconfigure(1, weight=1)
+        self.btn_wordlist = tombol(wl, "Upload Wordlist .txt", self._upload_wordlist, "neutral",
+                                   width=170)
+        self.btn_wordlist.grid(row=0, column=0)
+        self.lbl_wordlist = ctk.CTkLabel(wl, text="Opsional: daftar kata kunci untuk serangan kamus",
+                                         font=fnt(12), text_color=MUTED, anchor="w")
+        self.lbl_wordlist.grid(row=0, column=1, sticky="w", padx=12)
+        self.btn_hapus_wl = tombol(wl, "Remove", self._hapus_wordlist, "ghost", width=70, height=30)
+        self.btn_hapus_wl.grid(row=0, column=2)
+        self.btn_hapus_wl.grid_remove()
+
+        self.lbl_hint = ctk.CTkLabel(k, text="", font=fnt(12), text_color=MUTED, anchor="w",
+                                     justify="left", wraplength=560)
+        self.lbl_hint.grid(row=8, column=0, sticky="w", pady=(8, 14), **pad)
+
+    # ------------------------------------------------------------ ringkasan
+    def _bangun_ringkasan(self, induk):
+        k = ctk.CTkFrame(induk, fg_color=METRIK_BG, corner_radius=16, border_width=1,
+                         border_color=BORDER)
+        k.grid(row=0, column=0, sticky="nsew", pady=(0, 14))
+        k.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(k, text="Hasil Analisis", font=fnt(18, "bold"), text_color=INK,
+                     anchor="w").grid(row=0, column=0, columnspan=2, sticky="w", padx=20,
+                                      pady=(16, 8))
+        self.nilai = {}
+        for i, (kunci, judul) in enumerate((("algo", "Algoritma"), ("metode", "Metode"),
+                                            ("kunci", "Kunci ditemukan"), ("yakin", "Keyakinan"),
+                                            ("dicoba", "Kandidat dicoba"),
+                                            ("waktu", "Waktu proses")), 1):
+            ctk.CTkLabel(k, text=judul, font=fnt(12), text_color=MUTED, anchor="w").grid(
+                row=i, column=0, sticky="nw", padx=(20, 10), pady=2)
+            besar = kunci == "kunci"
+            lbl = ctk.CTkLabel(k, text="-", font=fnt(15 if besar else 13, "bold", mono=besar),
+                               text_color=INK, anchor="w", justify="left", wraplength=250)
+            lbl.grid(row=i, column=1, sticky="w", padx=(0, 20), pady=2)
+            self.nilai[kunci] = lbl
+        tb = ctk.CTkFrame(k, fg_color="transparent")
+        tb.grid(row=7, column=0, columnspan=2, sticky="ew", padx=20, pady=(10, 16))
+        tb.grid_columnconfigure((0, 1), weight=1)
+        self.btn_copy_key = tombol(tb, "Copy Key", self._salin_kunci, "neutral", height=34,
+                                   state="disabled")
+        self.btn_copy_key.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        self.btn_dl_key = tombol(tb, "Download Key", self._unduh_kunci, "blue", height=34,
+                                 state="disabled")
+        self.btn_dl_key.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self.btn_dl_plain = tombol(tb, "Download Plaintext", self._unduh_plain, "blue", height=34,
+                                   state="disabled")
+        self.btn_dl_plain.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+
+    def _bangun_aksi(self, induk):
+        k = kartu(induk)
+        k.grid(row=1, column=0, sticky="ew")
+        k.grid_columnconfigure(0, weight=1)
+        self.btn_run = tombol(k, "Run Analysis", self._run, "primary", height=44)
+        self.btn_run.grid(row=0, column=0, sticky="ew", padx=(16, 8), pady=14)
+        tombol(k, "Reset Input", self._reset, "neutral", height=44, width=120, border_width=1,
+               border_color=BORDER).grid(row=0, column=1, padx=(0, 16), pady=14)
+
+    # ------------------------------------------------------------ detail
+    def _bangun_laporan(self):
+        k = kartu(self)
+        k.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=28, pady=(0, 22))
+        k.grid_columnconfigure(0, weight=1)
+        k.grid_rowconfigure(1, weight=1)
+        kepala = ctk.CTkFrame(k, fg_color="transparent")
+        kepala.grid(row=0, column=0, sticky="ew", padx=20, pady=(14, 8))
+        kepala.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(kepala, text="Detail Langkah Analisis", font=fnt(16, "bold"),
+                     text_color=INK, anchor="w").grid(row=0, column=0, sticky="w")
+        self.seg = ctk.CTkSegmentedButton(
+            kepala, values=["Detail Langkah", "Plaintext"], command=self._tab, font=fnt(12),
+            fg_color=NEUTRAL, selected_color=BLUE, selected_hover_color=BLUE_H,
+            unselected_color=NEUTRAL, unselected_hover_color=NEUTRAL_H, text_color=INK)
+        self.seg.set("Detail Langkah")
+        self.seg.grid(row=0, column=1, padx=(0, 10))
+        self.btn_copy = tombol(kepala, "Copy", self._salin, "neutral", width=70, height=32,
+                               state="disabled")
+        self.btn_copy.grid(row=0, column=2, padx=(0, 6))
+        self.btn_dl_lap = tombol(kepala, "Download Report", self._unduh_laporan, "blue",
+                                 width=140, height=32, state="disabled")
+        self.btn_dl_lap.grid(row=0, column=3)
+        self.output = kotak_teks(k, mono=True, wrap="none", state="disabled")
+        self.output.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 16))
+
+    # ================================================================ logika
+    def _tampil_awal(self):
+        isi_readonly(self.output,
+                     "Pilih algoritma (atau Auto-detect), tempel ciphertext tanpa kunci, lalu klik Run Analysis.\n\n"
+                     "Di sini akan tampil langkah demi langkah cara kunci dan plaintext ditemukan:\n"
+                     "  Caesar    : coba 26 geseran\n"
+                     "  Vigenere  : Kasiski, Index of Coincidence, frekuensi per kolom, serangan kamus\n"
+                     "  Playfair  : serangan kamus\n"
+                     "  Hill      : known-plaintext (K = C x P^-1) atau serangan statistik\n"
+                     "  Stream    : brute force 256 seed LCG\n"
+                     "  OTP       : penjelasan mengapa tidak dapat dipecahkan\n")
+
+    def _ganti_algoritma(self):
+        kode = NAMA_ANALISIS[self.algo_var.get()]
+        self.lbl_hint.configure(text=HINT_ANALISIS[kode])
+        self.btn_wordlist.configure(state="normal" if kode in ("auto", "2", "3") else "disabled")
+
+    def _upload_input(self):
+        p = filedialog.askopenfilename(
+            parent=self.app, title="Pilih file ciphertext (.txt)",
+            filetypes=[("Text file", "*.txt"), ("Semua file", "*.*")])
+        if not p:
+            return
+        try:
+            ukuran = os.path.getsize(p)
+            with open(p, "rb") as f:
+                mentah = f.read(BATAS_PRATINJAU * 4)
+        except OSError as e:
+            self.app.toast.tampil(pesan_error(e), "error")
+            return
+        pratinjau = mentah.decode("utf-8-sig", errors="replace")[:BATAS_PRATINJAU]
+        if ukuran > len(mentah) or len(pratinjau) >= BATAS_PRATINJAU:
+            pratinjau += "\n\n... (pratinjau dipotong; seluruh isi file tetap dianalisis)"
+        self.file_path = p
+        isi_readonly(self.input, pratinjau)
+        self.lbl_file.configure(
+            text=f"{os.path.basename(p)}  ({fmt_ukuran(ukuran)}) - pratinjau, tidak bisa diedit",
+            text_color=BLUE_INK)
+        self.btn_hapus_file.grid()
+        self.app.toast.tampil(f"File dimuat: {os.path.basename(p)}", "info")
+
+    def _hapus_file(self):
+        self.file_path = None
+        self.input.configure(state="normal")
+        self.input.delete("1.0", "end")
+        self.lbl_file.configure(text="Belum ada file - tempel ciphertext di atas", text_color=MUTED)
+        self.btn_hapus_file.grid_remove()
+
+    def _upload_wordlist(self):
+        p = filedialog.askopenfilename(
+            parent=self.app, title="Pilih wordlist (.txt, satu kata per baris)",
+            filetypes=[("Text file", "*.txt"), ("Semua file", "*.*")])
+        if not p:
+            return
+        try:
+            jumlah = len(baca_teks(p).split())
+        except Exception as e:                              # noqa: BLE001
+            self.app.toast.tampil(pesan_error(e), "error")
+            return
+        if jumlah == 0:
+            self.app.toast.tampil("Wordlist kosong.", "error")
+            return
+        self.wordlist_path = p
+        extra = f" (dipakai {MAKS_KAMUS:,} pertama)" if jumlah > MAKS_KAMUS else ""
+        self.lbl_wordlist.configure(text=f"{os.path.basename(p)}: {jumlah:,} kata{extra}",
+                                    text_color=BLUE_INK)
+        self.btn_hapus_wl.grid()
+
+    def _hapus_wordlist(self):
+        self.wordlist_path = None
+        self.lbl_wordlist.configure(text="Opsional: daftar kata kunci untuk serangan kamus",
+                                    text_color=MUTED)
+        self.btn_hapus_wl.grid_remove()
+
+    # ---- proses
+    def _run(self):
+        if self.running:
+            return
+        teks = None if self.file_path else self.input.get("1.0", "end-1c")
+        if not self.file_path and not teks.strip():
+            self.app.toast.tampil("Tempel ciphertext atau unggah file .txt terlebih dahulu.", "error")
+            return
+        mentah = self.ent_offset.get().strip()
+        try:
+            offset = int(mentah) if mentah else 0
+            if offset < 0:
+                raise ValueError
+        except ValueError:
+            self.app.toast.tampil("Posisi crib harus bilangan bulat >= 0 (indeks huruf pertama, mulai 0).",
+                                  "error")
+            return
+        pilihan = NAMA_ANALISIS[self.algo_var.get()]
+        bahasa = PILIHAN_BAHASA[self.bahasa_var.get()]
+        crib = self.ent_crib.get().strip()
+        wl = self.wordlist_path
+        fp = self.file_path
+
+        self._bersihkan_hasil()
+        self.running = True
+        self.btn_run.configure(state="disabled", text="Analyzing...")
+        isi_readonly(self.output, "Menganalisis... (serangan Hill/Playfair bisa memakan beberapa detik)")
+        self.app.jalankan_tugas(
+            lambda: jalankan_analisis(pilihan, teks, fp, bahasa, crib, offset, wl),
+            self._selesai, self._gagal)
+
+    def _selesai(self, h):
+        self.running = False
+        self.btn_run.configure(state="normal", text="Run Analysis")
+        self.hasil = h
+        self.laporan = h["laporan"]
+        teks = h["teks_hasil"]
+        if len(teks) > BATAS_TAMPIL:
+            teks = teks[:BATAS_TAMPIL] + f"\n\n... (ditampilkan {BATAS_TAMPIL:,} dari {len(h['teks_hasil']):,} karakter)"
+        self.plain_tampil = teks or "(plaintext tidak dapat dipulihkan)"
+
+        self.nilai["algo"].configure(text=h["algoritma"])
+        self.nilai["metode"].configure(text=h["metode"])
+        if h["kunci"] is None:
+            self.nilai["kunci"].configure(text="tidak dapat ditentukan", text_color="#8A2B25")
+        else:
+            k = h["kunci"]
+            self.nilai["kunci"].configure(text=k if len(k) <= 60 else k[:57] + "...",
+                                          text_color=INK)
+        self.nilai["yakin"].configure(text=h["yakin"] or "-")
+        self.nilai["dicoba"].configure(text=f"{h['dicoba']:,}")
+        self.nilai["waktu"].configure(text=fmt_durasi(h["waktu_total_s"]))
+        self.btn_copy.configure(state="normal")
+        self.btn_dl_lap.configure(state="normal")
+        if h["kunci"] is not None:
+            self.btn_copy_key.configure(state="normal")
+            self.btn_dl_key.configure(state="normal")
+        if h["bytes_hasil"] is not None:
+            self.btn_dl_plain.configure(state="normal")
+        self.seg.set("Detail Langkah")
+        self._tab("Detail Langkah")
+
+        if h["kunci"] is None:
+            self.app.toast.tampil("Kunci tidak dapat ditentukan. Lihat Detail Langkah untuk alasannya.",
+                                  "info")
+        elif (h["yakin"] or "").startswith("Rendah"):
+            self.app.toast.tampil(f"Kunci tebakan: {h['kunci']} - keyakinan rendah, periksa plaintext-nya.",
+                                  "info")
+        else:
+            self.app.toast.tampil(f"Kunci ditemukan: {h['kunci']} (keyakinan {h['yakin']}).", "success")
+
+    def _gagal(self, e):
+        self.running = False
+        self.btn_run.configure(state="normal", text="Run Analysis")
+        self._tampil_awal()
+        self.app.toast.tampil(pesan_error(e), "error")
+
+    def _tab(self, nama):
+        if nama == "Plaintext":
+            self.output.configure(wrap="word")
+            isi_readonly(self.output, self.plain_tampil if self.hasil else "")
+        else:
+            self.output.configure(wrap="none")
+            isi_readonly(self.output, self.laporan if self.hasil else "")
+
+    def _bersihkan_hasil(self):
+        self.hasil = None
+        self.laporan = self.plain_tampil = ""
+        for lbl in self.nilai.values():
+            lbl.configure(text="-", text_color=INK)
+        for b in (self.btn_copy, self.btn_dl_lap, self.btn_copy_key, self.btn_dl_key,
+                  self.btn_dl_plain):
+            b.configure(state="disabled")
+
+    def _reset(self):
+        if self.running:
+            return
+        self._hapus_file()
+        self._hapus_wordlist()
+        self.ent_crib.delete(0, "end")
+        self.ent_offset.delete(0, "end")
+        self._bersihkan_hasil()
+        self.seg.set("Detail Langkah")
+        self.output.configure(wrap="none")
+        self._tampil_awal()
+
+    # ---- keluaran
+    def _salin(self):
+        if not self.hasil:
+            return
+        teks = self.hasil["teks_hasil"] if self.seg.get() == "Plaintext" else self.laporan
+        self.app.clipboard_clear()
+        self.app.clipboard_append(teks)
+        self.app.toast.tampil("Disalin ke clipboard.", "success", 2000)
+
+    def _salin_kunci(self):
+        if self.hasil and self.hasil["kunci"] is not None:
+            self.app.clipboard_clear()
+            self.app.clipboard_append(self.hasil["kunci"])
+            self.app.toast.tampil("Kunci disalin ke clipboard.", "success", 2000)
+
+    def _simpan(self, judul, nama_awal, tulis):
+        path = filedialog.asksaveasfilename(
+            parent=self.app, title=judul, initialfile=nama_awal, defaultextension=".txt",
+            filetypes=[("Text file", "*.txt"), ("Semua file", "*.*")])
+        if not path:
+            return
+        try:
+            tulis(path)
+        except OSError as e:
+            self.app.toast.tampil(f"Gagal menyimpan: {pesan_error(e)}", "error")
+            return
+        self.app.toast.tampil(f"Tersimpan: {path}", "success")
+
+    def _unduh_kunci(self):
+        h = self.hasil
+        if h and h["kunci"] is not None:
+            self._simpan("Simpan kunci", h["nama_kunci"] or "kunci_hasil_analisis.key.txt",
+                         lambda p: tulis_teks(p, h["kunci"] + "\n"))
+
+    def _unduh_plain(self):
+        h = self.hasil
+        if h and h["bytes_hasil"] is not None:
+            self._simpan("Simpan plaintext", h["nama_hasil"], lambda p: tulis_bytes(p, h["bytes_hasil"]))
+
+    def _unduh_laporan(self):
+        if self.hasil:
+            self._simpan("Simpan laporan analisis", "laporan_analisis.txt",
+                         lambda p: tulis_teks(p, self.laporan + "\n"))
+
+
+# ======================================================================
 # JENDELA UTAMA
 # ======================================================================
 class CryptoZarApp(ctk.CTk):
@@ -2561,6 +3908,7 @@ class CryptoZarApp(ctk.CTk):
         self.halaman = {
             "Encrypt": HalamanKripto(isi, self, "encrypt"),
             "Decrypt": HalamanKripto(isi, self, "decrypt"),
+            "Analyze": HalamanAnalisis(isi, self),
             "Demo": HalamanDemo(isi, self),
             "Benchmark": HalamanBenchmark(isi, self),
         }
