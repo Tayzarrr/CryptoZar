@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.key.txt
+*.enc.txt
+*.dec.txt
+hasil_beban_komputasi.csv
+pesan_demo.txt
+Thumbs.db
+.DS_Store
